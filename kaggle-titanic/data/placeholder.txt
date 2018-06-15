@@ -1,0 +1,2 @@
+Place train.csv and test.csv into this directory.
+You can download the files here: https://www.kaggle.com/c/titanic
