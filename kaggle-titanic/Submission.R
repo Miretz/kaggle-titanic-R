@@ -1,18 +1,17 @@
-rm(list=ls())
-
-set.seed(333)
+rm(list = ls())
 
 library(rpart)
 library(rpart.plot)
 library(randomForest)
 library(party)
-library(caret) 
+library(caret)
 library(stringi)
 library(stringr)
 library(parallel)
 library(doParallel)
 library(dplyr)
 library(mice)
+library(gbm)
 
 #
 # Create the title column
@@ -20,13 +19,25 @@ library(mice)
 createTitleColumn <- function(dataset) {
   dataset$Title <- gsub('(.*, )|(\\..*)', '', dataset$Name)
   # Titles with very low cell counts to be combined to "rare" level
-  rare_title <- c('Dona', 'Lady', 'the Countess','Capt', 'Col', 'Don', 
-                  'Dr', 'Major', 'Rev', 'Sir', 'Jonkheer')
+  rare_title <-
+    c(
+      'Dona',
+      'Lady',
+      'the Countess',
+      'Capt',
+      'Col',
+      'Don',
+      'Dr',
+      'Major',
+      'Rev',
+      'Sir',
+      'Jonkheer'
+    )
   
   # Also reassign mlle, ms, and mme accordingly
-  dataset$Title[dataset$Title == 'Mlle']        <- 'Miss' 
+  dataset$Title[dataset$Title == 'Mlle']        <- 'Miss'
   dataset$Title[dataset$Title == 'Ms']          <- 'Miss'
-  dataset$Title[dataset$Title == 'Mme']         <- 'Mrs' 
+  dataset$Title[dataset$Title == 'Mme']         <- 'Mrs'
   dataset$Title[dataset$Title %in% rare_title]  <- 'Rare Title'
   dataset$Title <- as.factor(dataset$Title)
   return(dataset)
@@ -37,21 +48,23 @@ createTitleColumn <- function(dataset) {
 # split function
 #
 splitFunction <- function(x) {
-  return(strsplit(x, split='[,.]')[[1]][1])
+  return(strsplit(x, split = '[,.]')[[1]][1])
 }
 
 
 #
 # Create FamilyId title
 #
-createFamilyIds <- function(dataset){
-  dataset$FamilySize <- dataset$SibSp + dataset$Parch + 1 # Engineer FamilySize
+createFamilyIds <- function(dataset) {
+  dataset$FamilySize <-
+    dataset$SibSp + dataset$Parch + 1 # Engineer FamilySize
   
   # Engineered variable: FamilyID
   name <- as.character(dataset$Name)
-  dataset$Surname <- sapply(name, FUN=splitFunction)
+  dataset$Surname <- sapply(name, FUN = splitFunction)
   
-  dataset$FamilyID <- paste(as.character(dataset$FamilySize), dataset$Surname, sep="")
+  dataset$FamilyID <-
+    paste(as.character(dataset$FamilySize), dataset$Surname, sep = "")
   dataset$FamilyID[dataset$FamilySize <= 4] <- 'Small'
   famIDs <- data.frame(table(dataset$FamilyID))
   famIDs <- famIDs[famIDs$Freq <= 4,]
@@ -60,7 +73,8 @@ createFamilyIds <- function(dataset){
   
   # Family Size Bucket
   dataset$FamilySizeBucket[dataset$FamilySize == 1] <- 'singleton'
-  dataset$FamilySizeBucket[dataset$FamilySize <= 4 & dataset$FamilySize > 1] <- 'small'
+  dataset$FamilySizeBucket[dataset$FamilySize <= 4 &
+                             dataset$FamilySize > 1] <- 'small'
   dataset$FamilySizeBucket[dataset$FamilySize > 4] <- 'large'
   dataset$FamilySizeBucket <- as.factor(dataset$FamilySizeBucket)
   
@@ -71,8 +85,10 @@ createFamilyIds <- function(dataset){
 #
 # Predict missing Fare
 #
-predictMissingFareValues <- function(dataset){
-  dataset$Fare[1044] <- median(dataset[dataset$Pclass == '3' & dataset$Embarked == 'S', ]$Fare, na.rm = TRUE)
+predictMissingFareValues <- function(dataset) {
+  dataset$Fare[1044] <-
+    median(dataset[dataset$Pclass == '3' &
+                     dataset$Embarked == 'S', ]$Fare, na.rm = TRUE)
   # dataset$Fare[1044] <- median(dataset$Fare, na.rm=TRUE)
   
   dataset$FareBucket <- cut(dataset$Fare, 4)
@@ -83,28 +99,40 @@ predictMissingFareValues <- function(dataset){
 #
 # Predict missing Age
 #
-predictMissingAgeValues <- function(dataset){
+predictMissingAgeValues <- function(dataset) {
   # Make variables factors into factors
-  factor_vars <- c('PassengerId','Pclass','Sex','Embarked',
-                   'Title','Surname','FamilyID','FamilySizeBucket')
+  factor_vars <- c(
+    'PassengerId',
+    'Pclass',
+    'Sex',
+    'Embarked',
+    'Title',
+    'Surname',
+    'FamilyID',
+    'FamilySizeBucket'
+  )
   
-  dataset[factor_vars] <- lapply(dataset[factor_vars], function(x) as.factor(x))
-  mice_mod <- mice(
-    dataset[, !names(dataset) %in%
-              c('PassengerId','Name','Ticket','Cabin','Family','Surname','Survived')], method='rf')
-  mice_output <- complete(mice_mod)
-  dataset$Age <- mice_output$Age
+  dataset[factor_vars] <-
+    lapply(dataset[factor_vars], function(x)
+      as.factor(x))
+  
+  age.model <- rpart(Age ~ Pclass+Sex+SibSp+Parch+Fare+Embarked+Title, data=dataset[!is.na(dataset$Age), ],
+                     method='anova')
+  dataset$Age[is.na(dataset$Age)] <- predict(age.model,dataset[is.na(dataset$Age), ])
   
   dataset$Child <- 'Child'
   dataset$Child[dataset$Age >= 18] <- 'Adult'
   dataset$Child <- as.factor(dataset$Child)
   
   dataset$Mother <- 'Not Mother'
-  dataset$Mother[dataset$Sex == 'female' & 
-                   dataset$Parch > 0 & dataset$Age > 18 & dataset$Title != 'Miss'] <- 'Mother'
+  dataset$Mother[dataset$Sex == 'female' &
+                   dataset$Parch > 0 &
+                   dataset$Age > 18 &
+                   dataset$Title != 'Miss'] <- 'Mother'
   dataset$Mother <- as.factor(dataset$Mother)
   
-  dataset$AgeBucket <- cut(dataset$Age, 5)
+  dataset$AgeBucket <- 0
+  dataset$AgeBucket[dataset$Age >= 18] <- 1
   
   return(dataset)
 }
@@ -113,18 +141,36 @@ predictMissingAgeValues <- function(dataset){
 #
 # Parse Cabin numbers
 #
-parseCabinNumbers <- function(dataset){
+parseCabinNumbers <- function(dataset) {
   # Cabin
   cabin <- as.character(dataset$Cabin)
-  countSpaces <- function(s) { sapply(gregexpr(" ", s), function(p) { sum(p>=0) } ) }
-  dataset$Cabins <- sapply(cabin, FUN=countSpaces) + 1 
+  countSpaces <-
+    function(s) {
+      sapply(gregexpr(" ", s), function(p) {
+        sum(p >= 0)
+      })
+    }
+  dataset$Cabins <- sapply(cabin, FUN = countSpaces) + 1
   dataset$Cabins[cabin == ""] <- 0
   
-  dataset$Deck <- sapply(cabin, FUN = function(p){substr(p, 1, 1)})
+  dataset$Deck <- sapply(
+    cabin,
+    FUN = function(p) {
+      substr(p, 1, 1)
+    }
+  )
   dataset$Deck <- as.factor(dataset$Deck)
   
   dataset$Ticket <- as.character(dataset$Ticket)
-  dataset$DeckTkt <- sapply(dataset$Ticket, FUN = function(p){substr(p, 1, 1)})
+  dataset$Ticket <- gsub('CA. ', '', dataset$Ticket)
+  dataset$Ticket <- gsub('CA ', '', dataset$Ticket)
+  dataset$DeckTkt <-
+    sapply(
+      dataset$Ticket,
+      FUN = function(p) {
+        substr(p, 1, 1)
+      }
+    )
   dataset$DeckTkt <- as.factor(dataset$DeckTkt)
   
   dataset$Ticket <- as.factor(dataset$Ticket)
@@ -138,9 +184,9 @@ parseCabinNumbers <- function(dataset){
 #
 # Preprocess data set
 #
-preprocessDataset <- function(dataset){
+preprocessDataset <- function(dataset) {
   dataset$Embarked <- as.character(dataset$Embarked)
-  dataset$Embarked[c(62,830)] = "S" # Fill embarked
+  dataset$Embarked[c(62, 830)] = "S" # Fill embarked
   dataset$Embarked <- as.factor(dataset$Embarked)
   
   dataset <- createTitleColumn(dataset)
@@ -168,6 +214,8 @@ test$Survived <- NA
 combi <- rbind(train, test)
 combi <- preprocessDataset(combi)
 # str(combi)
+# summary(combi)
+
 
 # Split back into test and train sets
 train <- combi[1:891,]
@@ -175,7 +223,10 @@ test <- combi[892:1309,]
 
 # crossvalidation set
 # train test split
-train_ind <- createDataPartition(y = train$Survived, p= 0.7, list = FALSE)
+train_ind <-
+  createDataPartition(y = train$Survived,
+                      p = 0.7,
+                      list = FALSE)
 train_1 <- train[train_ind, ]
 valid_1 <- train[-train_ind, ]
 
@@ -189,14 +240,9 @@ valid_1 <- train[-train_ind, ]
 # MODEL
 #-------------------------------------------------------
 
-grid <- expand.grid(C = c(0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75))
-
-trctrl <- trainControl(allowParallel = TRUE, method = 'repeatedcv', 
-                       number = 10, repeats = 3)
-
 # enable parallel processing
-cluster <- makeCluster(detectCores() - 1)
-registerDoParallel(cluster)
+#cluster <- makeCluster(detectCores() - 1)
+#registerDoParallel(cluster)
 
 
 system.time({
@@ -204,27 +250,31 @@ system.time({
     as.factor(Survived) ~
       Pclass + Sex + Title + AgeBucket + FamilySizeBucket + Mother + FareBucket + FamilyID + Deck + Cabins + DeckTkt + TicketShare.Freq,
     data = train_1,
-    method = "svmLinear",
-    trControl = trctrl,
-    tuneGrid = grid,
-    tuneLength = 10
+    method = "gbm"
   )
 })
-fit
+
+print(fit)
+plot(fit)
+
 
 # stop the cluster
-stopCluster(cluster)
-registerDoSEQ()
+#stopCluster(cluster)
+#registerDoSEQ()
 
 # cross validation
 Prediction <- predict(fit, valid_1)
 results <- table(Prediction, valid_1$Survived)
 confusionMatrix(results)
 
+
+
 # Variable importances
 varImp(fit)
+# plot(varImp(fit))
 
 # submission
 Prediction <- predict(fit, test)
-submit <- data.frame(PassengerId = test$PassengerId, Survived = Prediction)
+submit <-
+  data.frame(PassengerId = test$PassengerId, Survived = Prediction)
 write.csv(submit, file = "result.csv", row.names = FALSE)
